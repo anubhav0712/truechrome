@@ -50,6 +50,7 @@ class CameraViewModel @Inject constructor(
     private val startPreviewUseCase: StartPreviewUseCase,
     private val capturePhotoUseCase: com.truechrome.app.camera.domain.usecase.CapturePhotoUseCase,
     private val cameraRepository: CameraRepository,
+    private val mediaStoreRepository: com.truechrome.app.camera.data.MediaStoreRepositoryImpl,
     val lutManager: com.truechrome.app.processing.gl.LutManager
 ) : ViewModel() {
 
@@ -99,6 +100,15 @@ class CameraViewModel @Inject constructor(
      */
     fun onResume() {
         openCameraIfReady()
+        
+        // If there's a thumbnail photo, check if the user deleted it in the gallery app
+        _uiState.value.latestPhotoUri?.let { uri ->
+            viewModelScope.launch {
+                if (!mediaStoreRepository.doesUriExist(uri)) {
+                    _uiState.update { it.copy(latestPhotoUri = null) }
+                }
+            }
+        }
     }
 
     /**
@@ -283,13 +293,8 @@ class CameraViewModel @Inject constructor(
                 if (result.isFailure) {
                     throw result.exceptionOrNull() ?: Exception("Unknown capture error")
                 } else {
-                    // Show a toast to confirm saving (we can't easily launch Compose Toasts from ViewModel,
-                    // so we use the application context from LutManager or similar, but since we don't
-                    // have context here, we can set a success message in uiState to trigger a snackbar).
-                    _uiState.update { it.copy(errorMessage = "Photo saved successfully!") }
-                    // Auto-dismiss the success message after 2 seconds
-                    kotlinx.coroutines.delay(2000)
-                    dismissError()
+                    // Update UI with the latest captured photo URI
+                    _uiState.update { it.copy(latestPhotoUri = result.getOrNull()) }
                 }
 
                 stateMachine.transitionTo(

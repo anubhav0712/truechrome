@@ -18,21 +18,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import com.truechrome.app.ui.theme.TrueChromeAccent
-import com.truechrome.app.ui.theme.TextPrimary
 
 /**
  * ShutterButton — The primary capture button.
  *
- * Design: Double-ring circle inspired by Fujifilm's X-series shutter release.
- * - Outer ring: thin white border (always visible)
- * - Inner circle: gold fill that scales down on press (spring physics)
- * - Press animation uses spring() for a satisfying mechanical "depress" feel
- *
- * HAPTIC FEEDBACK:
- * The actual haptic is triggered by the ViewModel (not here) to ensure it fires
- * at the exact moment the ring buffer frame is extracted, not when the user touches
- * the button. This guarantees the haptic correlates with actual capture, not UI latency.
+ * Design: Minimalist, glass-like white circle.
+ * - Press animation uses spring() for a fluid, bouncy mechanical feel
  */
 @Composable
 fun ShutterButton(
@@ -43,12 +34,12 @@ fun ShutterButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    // Spring animation for press feedback — mimics mechanical shutter depression
+    // Spring animation for press feedback
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.85f else 1.0f,
         animationSpec = spring(
-            dampingRatio = 0.4f,  // Slightly underdamped — small bounce on release
-            stiffness = 800f      // Crisp response
+            dampingRatio = 0.4f,  // Bouncy release
+            stiffness = 800f
         ),
         label = "shutter_scale"
     )
@@ -57,7 +48,7 @@ fun ShutterButton(
 
     Box(
         modifier = modifier
-            .size(72.dp)
+            .size(80.dp)
             .scale(scale)
             .clickable(
                 interactionSource = interactionSource,
@@ -67,23 +58,23 @@ fun ShutterButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Outer ring
+        // Outer translucent ring
         Box(
             modifier = Modifier
-                .size(72.dp)
+                .size(80.dp)
                 .border(
-                    width = 3.dp,
-                    color = TextPrimary.copy(alpha = alpha),
+                    width = 4.dp,
+                    color = Color.White.copy(alpha = alpha * 0.3f),
                     shape = CircleShape
                 )
         )
 
-        // Inner circle — gold accent, the visual "button"
+        // Inner solid white circle
         Box(
             modifier = Modifier
-                .size(58.dp)
+                .size(64.dp)
                 .background(
-                    color = TrueChromeAccent.copy(alpha = alpha),
+                    color = Color.White.copy(alpha = alpha * 0.9f),
                     shape = CircleShape
                 )
         )

@@ -3,19 +3,20 @@ package com.truechrome.app.ui.viewfinder
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,27 +27,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.truechrome.app.camera.presentation.CameraUiState
 import com.truechrome.app.camera.presentation.CameraViewModel
 import com.truechrome.app.processing.color.FilmSimulation
-import com.truechrome.app.ui.components.FilmSimSelector
 import com.truechrome.app.ui.components.ShutterButton
-import com.truechrome.app.ui.theme.SurfaceBlack
-import com.truechrome.app.ui.theme.TextSecondary
-import com.truechrome.app.ui.theme.TrueChromeAccent
 
-/**
- * ViewfinderScreen — The main camera screen.
- *
- * DESIGN PHILOSOPHY: "Zero-UI"
- * The viewfinder dominates the screen. Controls are minimal and only appear
- * when needed (via edge swipes or taps). The user's attention should be on
- * the scene, not the interface.
- *
- * LIFECYCLE INTEGRATION:
- * Uses LifecycleEventObserver to call ViewModel.onResume/onPause,
- * which triggers camera open/close. This ensures:
- * - Camera opens when the app is in the foreground
- * - Camera closes when the app goes to background (releases hardware for other apps)
- * - No camera session survives Activity destruction
- */
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import android.content.Intent
+import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
+
 @Composable
 fun ViewfinderScreen(
     modifier: Modifier = Modifier,
@@ -85,83 +77,194 @@ fun ViewfinderScreen(
         }
     }
 
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
-            .background(SurfaceBlack)
+            .background(Color.Black)
     ) {
-        // ── Viewfinder Area ──
-        // Phase 3 will replace this with GLTextureView.
-        // For now, show camera status information.
-        ViewfinderContent(
-            uiState = uiState,
-            viewModel = viewModel,
-            onTapToFocus = { x, y -> viewModel.onTapToFocus(x, y) },
-            modifier = Modifier.fillMaxSize()
+        // 1. Top Spacing (Status Bar + extra)
+        Spacer(
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .height(48.dp)
         )
 
-        // ── Film Simulation Indicator (top-left) ──
-        FilmSimIndicator(
-            simulation = uiState.selectedSimulation,
-            onClick = { viewModel.toggleSimSelector() },
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(start = 20.dp, top = 16.dp)
-        )
-
-        // ── Camera Info (top-right) ──
-        CameraInfoBadge(
-            uiState = uiState,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(end = 20.dp, top = 16.dp)
-        )
-
-        // ── Bottom Controls ──
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Film simulation picker (animated visibility)
-            AnimatedVisibility(
-                visible = uiState.isSimSelectorVisible,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
-            ) {
-                FilmSimSelector(
-                    selectedSimulation = uiState.selectedSimulation,
-                    onSimulationSelected = { viewModel.selectSimulation(it) },
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-            }
-
-            // Shutter button
-            ShutterButton(
-                onClick = { viewModel.onShutterPressed() },
-                enabled = uiState.isPreviewing && !uiState.isCapturing
-            )
+        // 2. Viewfinder Area (4:3 Aspect Ratio)
+        val previewSize = uiState.cameraConfig?.previewSize
+        val aspectRatio = if (previewSize != null) {
+            previewSize.height.toFloat() / previewSize.width.toFloat()
+        } else {
+            3f / 4f
         }
 
-        // ── Error overlay ──
-        uiState.errorMessage?.let { error ->
-            ErrorOverlay(
-                message = error,
-                onDismiss = { viewModel.dismissError() },
-                modifier = Modifier.align(Alignment.Center)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(aspectRatio)
+                .background(Color(0xFF111111))
+        ) {
+            ViewfinderContent(
+                uiState = uiState,
+                viewModel = viewModel,
+                onTapToFocus = { x, y -> viewModel.onTapToFocus(x, y) },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Grid overlay (optional, adds to the camera feel)
+            GridOverlay(modifier = Modifier.fillMaxSize())
+        }
+
+        // 3. Bottom Controls Area
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+        ) {
+            if (uiState.isPreviewing) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Filter Slider
+                    FilterSlider(
+                        simulations = FilmSimulation.entries,
+                        selectedSimulation = uiState.selectedSimulation,
+                        onSimulationSelected = { viewModel.selectSimulation(it) }
+                    )
+
+                    // Bottom Row: Thumbnail & Shutter
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // Thumbnail on the left
+                        uiState.latestPhotoUri?.let { uri ->
+                            val context = LocalContext.current
+                            AsyncImage(
+                                model = uri,
+                                contentDescription = "Latest Photo",
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .align(Alignment.CenterStart)
+                                    .clip(CircleShape)
+                                    .clickable {
+                                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                                            setDataAndType(uri, "image/jpeg")
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        
+                                        // Attempt to bypass the chooser by explicitly setting the default gallery package
+                                        val resolveInfo = context.packageManager.resolveActivity(
+                                            intent,
+                                            android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+                                        )
+                                        if (resolveInfo != null && resolveInfo.activityInfo.packageName != "android") {
+                                            intent.setPackage(resolveInfo.activityInfo.packageName)
+                                        }
+                                        
+                                        context.startActivity(intent)
+                                    },
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+
+                        // Shutter Button in the center
+                        ShutterButton(
+                            onClick = { viewModel.onShutterPressed() },
+                            enabled = !uiState.isCapturing
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Error overlay ──
+    uiState.errorMessage?.let { error ->
+        ErrorOverlay(
+            message = error,
+            onDismiss = { viewModel.dismissError() },
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+}
+
+@Composable
+private fun GridOverlay(modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val strokeWidth = 1.dp.toPx()
+        val color = Color.White.copy(alpha = 0.2f)
+        
+        // Horizontal lines
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(0f, size.height / 3f),
+            end = androidx.compose.ui.geometry.Offset(size.width, size.height / 3f),
+            strokeWidth = strokeWidth
+        )
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(0f, size.height * 2f / 3f),
+            end = androidx.compose.ui.geometry.Offset(size.width, size.height * 2f / 3f),
+            strokeWidth = strokeWidth
+        )
+        
+        // Vertical lines
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(size.width / 3f, 0f),
+            end = androidx.compose.ui.geometry.Offset(size.width / 3f, size.height),
+            strokeWidth = strokeWidth
+        )
+        drawLine(
+            color = color,
+            start = androidx.compose.ui.geometry.Offset(size.width * 2f / 3f, 0f),
+            end = androidx.compose.ui.geometry.Offset(size.width * 2f / 3f, size.height),
+            strokeWidth = strokeWidth
+        )
+    }
+}
+
+@Composable
+private fun FilterSlider(
+    simulations: List<FilmSimulation>,
+    selectedSimulation: FilmSimulation,
+    onSimulationSelected: (FilmSimulation) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    ScrollableTabRow(
+        selectedTabIndex = simulations.indexOf(selectedSimulation),
+        modifier = modifier.fillMaxWidth(),
+        containerColor = Color.Transparent,
+        contentColor = Color.White,
+        edgePadding = 32.dp,
+        indicator = { }, // Hide the default underline indicator
+        divider = { }    // Hide the bottom divider
+    ) {
+        simulations.forEach { simulation ->
+            val isSelected = simulation == selectedSimulation
+            Tab(
+                selected = isSelected,
+                onClick = { onSimulationSelected(simulation) },
+                text = {
+                    Text(
+                        text = simulation.displayName.uppercase(),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            letterSpacing = 1.sp,
+                            color = if (isSelected) simulation.accentColor else Color.White.copy(alpha = 0.5f)
+                        )
+                    )
+                }
             )
         }
     }
 }
 
-/**
- * Viewfinder content area — handles tap-to-focus gestures.
- * Phase 3 will replace the placeholder with the actual GL surface.
- */
 @Composable
 private fun ViewfinderContent(
     uiState: CameraUiState,
@@ -169,15 +272,45 @@ private fun ViewfinderContent(
     onTapToFocus: (Float, Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val simulations = FilmSimulation.entries.toTypedArray()
+    val currentIndex = simulations.indexOf(uiState.selectedSimulation)
+
+    fun selectNext() {
+        val nextIndex = (currentIndex + 1) % simulations.size
+        viewModel.selectSimulation(simulations[nextIndex])
+    }
+
+    fun selectPrev() {
+        val prevIndex = (currentIndex - 1 + simulations.size) % simulations.size
+        viewModel.selectSimulation(simulations[prevIndex])
+    }
+
     Box(
         modifier = modifier
-            .background(SurfaceBlack)
             .pointerInput(Unit) {
                 detectTapGestures { offset ->
-                    // Normalize tap coordinates to 0..1 range
                     val x = offset.x / size.width
                     val y = offset.y / size.height
                     onTapToFocus(x, y)
+                }
+            }
+            .pointerInput(Unit) {
+                var totalDrag = 0f
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        if (totalDrag > 50f) {
+                            selectPrev()
+                        } else if (totalDrag < -50f) {
+                            selectNext()
+                        }
+                        totalDrag = 0f
+                    },
+                    onDragCancel = {
+                        totalDrag = 0f
+                    }
+                ) { change, dragAmount ->
+                    change.consume()
+                    totalDrag += dragAmount
                 }
             },
         contentAlignment = Alignment.Center
@@ -187,25 +320,17 @@ private fun ViewfinderContent(
                 Text(
                     text = "Grant camera permission to begin",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
+                    color = Color.White.copy(alpha = 0.7f)
                 )
             }
             uiState.isLoading -> {
                 Text(
                     text = "Initializing camera...",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
+                    color = Color.White.copy(alpha = 0.7f)
                 )
             }
             uiState.isPreviewing -> {
-                val previewSize = uiState.cameraConfig?.previewSize
-                // Camera2 sizes are landscape (width > height), so portrait aspect ratio is height / width
-                val aspectRatio = if (previewSize != null) {
-                    previewSize.height.toFloat() / previewSize.width.toFloat()
-                } else {
-                    3f / 4f
-                }
-
                 androidx.compose.ui.viewinterop.AndroidView(
                     factory = { context ->
                         com.truechrome.app.ui.viewfinder.GLTextureView(
@@ -221,88 +346,37 @@ private fun ViewfinderContent(
                         view.currentSimulation = uiState.selectedSimulation
                         view.cameraPreviewSize = uiState.cameraConfig?.previewSize
                     },
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .aspectRatio(aspectRatio, matchHeightConstraintsFirst = true)
+                    modifier = Modifier.fillMaxSize()
                 )
             }
+        }
+
+        // Shutter Flash Animation
+        var showFlash by remember { mutableStateOf(false) }
+        LaunchedEffect(uiState.isCapturing) {
+            if (uiState.isCapturing) {
+                showFlash = true
+                kotlinx.coroutines.delay(50)
+                showFlash = false
+            }
+        }
+        val flashAlpha by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = if (showFlash) 0.8f else 0f,
+            animationSpec = androidx.compose.animation.core.tween(
+                durationMillis = if (showFlash) 0 else 300
+            ),
+            label = "FlashAlpha"
+        )
+        if (flashAlpha > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = flashAlpha))
+            )
         }
     }
 }
 
-/**
- * Film simulation indicator — small label in the top-left corner.
- * Tapping it toggles the simulation picker.
- */
-@Composable
-private fun FilmSimIndicator(
-    simulation: FilmSimulation,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier.clickable(onClick = onClick)
-    ) {
-        Text(
-            text = simulation.displayName.uppercase(),
-            style = MaterialTheme.typography.labelSmall.copy(
-                color = simulation.accentColor,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.5.sp
-            )
-        )
-        Text(
-            text = simulation.subtitle,
-            style = MaterialTheme.typography.labelSmall.copy(
-                color = TextSecondary,
-                fontSize = 8.sp
-            )
-        )
-    }
-}
-
-/**
- * Camera info badge — shows hardware capabilities in top-right corner.
- * Helps confirm that the camera is operating in the expected mode.
- */
-@Composable
-private fun CameraInfoBadge(
-    uiState: CameraUiState,
-    modifier: Modifier = Modifier
-) {
-    if (!uiState.isPreviewing) return
-
-    val config = uiState.cameraConfig ?: return
-
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.End
-    ) {
-        // Hardware level indicator
-        Text(
-            text = if (config.isLevel3) "LEVEL 3" else "LIMITED",
-            style = MaterialTheme.typography.labelSmall.copy(
-                color = if (config.isLevel3) TrueChromeAccent else TextSecondary,
-                fontWeight = FontWeight.Bold,
-                fontSize = 8.sp,
-                letterSpacing = 1.sp
-            )
-        )
-
-        // Resolution
-        Text(
-            text = "${config.captureSize.width}×${config.captureSize.height}",
-            style = MaterialTheme.typography.labelSmall.copy(
-                color = TextSecondary,
-                fontSize = 8.sp
-            )
-        )
-    }
-}
-
-/**
- * Error overlay — semi-transparent overlay with error message.
- */
 @Composable
 private fun ErrorOverlay(
     message: String,
@@ -311,7 +385,6 @@ private fun ErrorOverlay(
 ) {
     Box(
         modifier = modifier
-            .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.7f))
             .clickable(onClick = onDismiss),
         contentAlignment = Alignment.Center

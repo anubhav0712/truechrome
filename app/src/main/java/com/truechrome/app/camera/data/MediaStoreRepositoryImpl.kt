@@ -73,4 +73,21 @@ class MediaStoreRepositoryImpl @Inject constructor(
             }
         }
     }
+    override suspend fun doesUriExist(uri: Uri): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns._ID),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    cursor.moveToFirst()
+                } ?: false
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
 }

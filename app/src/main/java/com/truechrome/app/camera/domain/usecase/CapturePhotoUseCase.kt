@@ -42,7 +42,7 @@ class CapturePhotoUseCase @Inject constructor(
         targetTimestamp: Long,
         simulation: FilmSimulation,
         sensorOrientation: Int
-    ): Result<Unit> = withContext(Dispatchers.Default) {
+    ): Result<android.net.Uri> = withContext(Dispatchers.Default) {
         try {
             Log.d(TAG, "Starting capture pipeline for timestamp $targetTimestamp")
 
@@ -73,7 +73,7 @@ class CapturePhotoUseCase @Inject constructor(
             // Also applies the sensor orientation rotation to fix portrait images.
             jpegBytes = applySoftwareColorGrade(jpegBytes, simulation.params, sensorOrientation)
             
-            mediaStoreRepository.saveJpeg(jpegBytes, simulation.displayName)
+            val uri = mediaStoreRepository.saveJpeg(jpegBytes, simulation.displayName)
             
             // Close the fused frame explicitly since we bypassed the ImageWriter
             fusedFrame.close()
@@ -82,7 +82,7 @@ class CapturePhotoUseCase @Inject constructor(
             zslRingBuffer.unlock()
 
             Log.d(TAG, "Capture pipeline completed successfully")
-            Result.success(Unit)
+            Result.success(uri)
 
         } catch (e: Exception) {
             Log.e(TAG, "Capture pipeline failed", e)

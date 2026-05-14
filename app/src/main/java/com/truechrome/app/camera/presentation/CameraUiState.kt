@@ -41,5 +41,8 @@ data class CameraUiState(
     val cameraConfig: CameraConfig? = null,
 
     /** Whether AE/AWB have converged and locked (deterministic mode ready) */
-    val isExposureLocked: Boolean = false
+    val isExposureLocked: Boolean = false,
+
+    /** URI of the most recently captured photo */
+    val latestPhotoUri: android.net.Uri? = null
 )

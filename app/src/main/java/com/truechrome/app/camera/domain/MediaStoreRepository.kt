@@ -18,4 +18,9 @@ interface MediaStoreRepository {
      * @return The ContentResolver Uri of the saved image
      */
     suspend fun saveJpeg(jpegBytes: ByteArray, simulationName: String): Uri
+
+    /**
+     * Checks if a Uri still exists in the MediaStore.
+     */
+    suspend fun doesUriExist(uri: Uri): Boolean
 }

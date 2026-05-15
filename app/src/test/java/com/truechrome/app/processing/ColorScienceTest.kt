@@ -86,11 +86,11 @@ class ColorScienceTest {
         val chromeShader = ShaderSources.PASS4_COLOR_CHROME_FRAGMENT
         assertTrue(
             "Subtractive CMY inversion is missing! Colors will act additively instead of like film dyes.",
-            chromeShader.contains("vec3 cmy = 1.0 - color;")
+            chromeShader.contains("vec3 cmy = 1.0 - clampedColor;")
         )
         assertTrue(
             "Dye density exponentiation is missing! Film depth simulation will fail.",
-            chromeShader.contains("vec3 denseCMY = pow(cmy, vec3(1.0 + (u_chromeStrength * mask)));")
+            chromeShader.contains("vec3 denseCMY = pow(cmy, vec3(1.0 + (localChromeStrength * mask)));")
         )
     }
 
@@ -110,6 +110,45 @@ class ColorScienceTest {
         assertTrue(
             "Halation additive composite is missing!",
             compositeShader.contains("vec3 finalColor = color + (halationBloom * u_halationIntensity);")
+        )
+    }
+
+    @Test
+    fun testCosineVignetteExists() {
+        // Ensures Optical Vignetting mathematically uses the Cosine Fourth Law (1 / (1 + r^2)^2)
+        val grainShader = ShaderSources.PASS5_GRAIN_FRAGMENT
+        assertTrue(
+            "Cosine Fourth Law physical vignette falloff is missing!",
+            grainShader.contains("float falloff = 1.0 + distSq * (4.0 * u_vignetteStrength);") &&
+            grainShader.contains("float vignette = 1.0 / (falloff * falloff);")
+        )
+        assertTrue(
+            "Aspect ratio correction for vignette is missing! It will be stretched.",
+            grainShader.contains("uv.x *= u_resolution.x / u_resolution.y;")
+        )
+    }
+
+    @Test
+    fun testSkinToneProtectionExists() {
+        // Ensures human skin vectors are anchored to the Vectorscope I-Line
+        val lutShader = ShaderSources.PASS3_COLOR_GRADE_FRAGMENT
+        val chromeShader = ShaderSources.PASS4_COLOR_CHROME_FRAGMENT
+
+        val skinHueCheck = "float SKIN_HUE = 0.05;"
+        val gaussianCheck = "float skinWeight = exp(-(hueDist * hueDist) / 0.0018);"
+        val rgb2hsvCheck = "vec3 rgb2hsv(vec3 c)"
+
+        assertTrue(
+            "RGB to HSV function missing in shaders for skin tone detection!",
+            lutShader.contains(rgb2hsvCheck) && chromeShader.contains(rgb2hsvCheck)
+        )
+        assertTrue(
+            "I-Line Vectorscope anchor (0.05 hue) is missing in LUT pass!",
+            lutShader.contains(skinHueCheck) && lutShader.contains(gaussianCheck)
+        )
+        assertTrue(
+            "I-Line Vectorscope anchor (0.05 hue) is missing in Color Chrome pass!",
+            chromeShader.contains(gaussianCheck)
         )
     }
 

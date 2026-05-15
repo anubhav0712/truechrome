@@ -21,6 +21,21 @@ package com.truechrome.app.processing.gl
 object ShaderSources {
 
     // ══════════════════════════════════════════════════════
+    // COMMON MATH FUNCTIONS
+    // ══════════════════════════════════════════════════════
+
+    const val GLSL_RGB2HSV = """
+        vec3 rgb2hsv(vec3 c) {
+            vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+            vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+            vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+            float d = q.x - min(q.w, q.y);
+            float e = 1.0e-10;
+            return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+        }
+    """
+
+    // ══════════════════════════════════════════════════════
     // SHARED VERTEX SHADER — used by all passes
     // ══════════════════════════════════════════════════════
 
@@ -189,10 +204,11 @@ object ShaderSources {
         // 12 saturation multipliers for 12 hue sectors (30° each)
         uniform float u_satMults[12];
         uniform float u_globalSaturation;
+        uniform int u_isMonochrome;
+        uniform vec3 u_monoWeights;
+        uniform float u_skinToneProtection;
         
-        // Monochrome conversion
-        uniform bool u_isMonochrome;
-        uniform vec3 u_monoWeights;   // (R, G, B) weights for luminosity B&W
+        $GLSL_RGB2HSV
         
         // RGB → HSL conversion (for hue-dependent saturation)
         vec3 rgb2hsl(vec3 c) {
@@ -236,25 +252,47 @@ object ShaderSources {
             
             // Apply 3D LUT
             vec3 lutColor = texture(u_lutTexture, color).rgb;
-            color = mix(color, lutColor, u_lutStrength);
+            vec3 gradedColor = mix(color, lutColor, u_lutStrength);
             
             // Hue-dependent saturation
-            vec3 hsl = rgb2hsl(color);
+            vec3 hsl = rgb2hsl(gradedColor);
             float hueMult = getHueSatMultiplier(hsl.x);
             
             // Apply saturation in a luminance-preserving way
-            float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            float luma = dot(gradedColor, vec3(0.2126, 0.7152, 0.0722));
             vec3 desaturated = vec3(luma);
             float effectiveSat = u_globalSaturation * hueMult;
-            color = mix(desaturated, color, effectiveSat);
+            gradedColor = mix(desaturated, gradedColor, effectiveSat);
             
             // Monochrome conversion
-            if (u_isMonochrome) {
-                float monoLuma = dot(color, u_monoWeights);
-                color = vec3(monoLuma);
+            if (u_isMonochrome == 1) {
+                float monoLuma = dot(gradedColor, u_monoWeights);
+                gradedColor = vec3(monoLuma);
             }
             
-            fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+            // ── Vectorscope Skin Tone Protection (I-Line Anchoring) ──
+            if (u_skinToneProtection > 0.001) {
+                vec3 hsv = rgb2hsv(color); // Analyze original, pre-LUT color
+                
+                // Human blood dictates skin falls precisely on the I-Line (approx 15-18 deg, or 0.05 normalized hue)
+                float SKIN_HUE = 0.05;
+                float hueDist = min(abs(hsv.x - SKIN_HUE), 1.0 - abs(hsv.x - SKIN_HUE));
+                
+                // Gaussian falloff for hue (sigma = 0.03 ~10 degrees)
+                float skinWeight = exp(-(hueDist * hueDist) / 0.0018);
+                
+                // Ensure the pixel has enough saturation and luminance to actually be skin
+                float satWeight = smoothstep(0.1, 0.7, hsv.y);
+                float valWeight = smoothstep(0.1, 0.9, hsv.z);
+                
+                // Final protection mask
+                float W = skinWeight * satWeight * valWeight * u_skinToneProtection;
+                
+                // Interpolate between the heavily graded color and the original color
+                gradedColor = mix(gradedColor, color, W);
+            }
+            
+            fragColor = vec4(clamp(gradedColor, 0.0, 1.0), 1.0);
         }
     """.trimIndent()
 
@@ -272,6 +310,9 @@ object ShaderSources {
         uniform sampler2D u_inputTexture;
         uniform float u_chromeStrength;
         uniform float u_chromeThreshold;
+        uniform float u_skinToneProtection;
+        
+        $GLSL_RGB2HSV
         
         void main() {
             vec3 color = texture(u_inputTexture, v_texCoord).rgb;
@@ -287,6 +328,22 @@ object ShaderSources {
             // Clamp color to prevent NaN in pow() if HDR values exceed 1.0 (blown highlights)
             vec3 clampedColor = clamp(color, 0.0, 1.0);
             
+            float localChromeStrength = u_chromeStrength;
+            
+            // ── Vectorscope Skin Tone Protection ──
+            if (u_skinToneProtection > 0.001) {
+                vec3 hsv = rgb2hsv(clampedColor);
+                float hueDist = min(abs(hsv.x - 0.05), 1.0 - abs(hsv.x - 0.05));
+                float skinWeight = exp(-(hueDist * hueDist) / 0.0018);
+                float satWeight = smoothstep(0.1, 0.7, hsv.y);
+                float valWeight = smoothstep(0.1, 0.9, hsv.z);
+                float W = skinWeight * satWeight * valWeight * u_skinToneProtection;
+                
+                // Subtractive mixing heavily damages skin tones by removing light.
+                // We reduce the effect strength specifically for skin vectors.
+                localChromeStrength *= (1.0 - W);
+            }
+            
             // 1. Convert to CMY
             vec3 cmy = 1.0 - clampedColor;
             
@@ -298,7 +355,7 @@ object ShaderSources {
             
             // 3. Apply chemical dye density via exponential curve
             // Increased strength means thicker dyes, absorbing exponentially more light
-            vec3 denseCMY = pow(cmy, vec3(1.0 + (u_chromeStrength * mask)));
+            vec3 denseCMY = pow(cmy, vec3(1.0 + (localChromeStrength * mask)));
             
             // 4. Convert back to RGB
             vec3 deepened = 1.0 - denseCMY;
@@ -343,6 +400,7 @@ object ShaderSources {
         uniform float u_grainSize;
         uniform float u_grainLumaResponse;
         uniform float u_grainSeed;    // Deterministic: captureTimestamp for final, frameIndex for preview
+        uniform float u_vignetteStrength;
         
         // Deterministic hash function — NOT random
         // Same input always produces same output (IEEE 754 highp guarantee)
@@ -354,6 +412,24 @@ object ShaderSources {
         
         void main() {
             vec3 color = texture(u_inputTexture, v_texCoord).rgb;
+            
+            // ── Optical Illuminance Falloff (Cosine Fourth Law Vignette) ──
+            if (u_vignetteStrength > 0.001) {
+                // Shift UV to -0.5 to 0.5
+                vec2 uv = v_texCoord - 0.5;
+                // Correct for aspect ratio so vignette is circular, not elliptical
+                uv.x *= u_resolution.x / u_resolution.y;
+                
+                float distSq = dot(uv, uv);
+                
+                // Calculate physically accurate light falloff
+                // E = E_0 * cos^4(theta)
+                // Approximated by E = E_0 / (1 + r^2)^2
+                float falloff = 1.0 + distSq * (4.0 * u_vignetteStrength);
+                float vignette = 1.0 / (falloff * falloff);
+                
+                color *= vignette;
+            }
             
             if (u_grainIntensity < 0.001) {
                 fragColor = vec4(color, 1.0);

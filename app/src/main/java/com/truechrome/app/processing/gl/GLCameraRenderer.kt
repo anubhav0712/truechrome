@@ -264,6 +264,9 @@ class GLCameraRenderer {
         program.setVec3("u_monoWeights",
             params.monoRedWeight, params.monoGreenWeight, params.monoBlueWeight)
 
+        // Skin Tone Protection
+        program.setFloat("u_skinToneProtection", params.skinToneProtection)
+
         drawQuad()
     }
 
@@ -283,6 +286,7 @@ class GLCameraRenderer {
 
         program.setFloat("u_chromeStrength", params.colorChromeStrength)
         program.setFloat("u_chromeThreshold", params.colorChromeThreshold)
+        program.setFloat("u_skinToneProtection", params.skinToneProtection)
 
         drawQuad()
     }
@@ -350,6 +354,7 @@ class GLCameraRenderer {
         program.setFloat("u_grainIntensity", params.grainIntensity)
         program.setFloat("u_grainSize", params.grainSize)
         program.setFloat("u_grainLumaResponse", params.grainLumaResponse)
+        program.setFloat("u_vignetteStrength", params.vignetteStrength)
         // Deterministic seed: monotonically increasing frame index
         // For final capture, the caller would pass captureTimestamp instead
         program.setFloat("u_grainSeed", (frameIndex % 10000).toFloat())

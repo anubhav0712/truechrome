@@ -74,7 +74,13 @@ data class FilmSimulationParams(
     val sharpenStrength: Float,     // 0.0 = none (portraits), 1.0 = strong (landscapes)
 
     // ── Local Tone Mapping ──
-    val localToneMapStrength: Float  // 0.0 = none (preserve natural contrast), 1.0 = aggressive HDR
+    val localToneMapStrength: Float, // 0.0 = none (preserve natural contrast), 1.0 = aggressive HDR
+
+    // ── Optical Vignetting ──
+    val vignetteStrength: Float,    // 0.0 = none, 1.0 = heavy optical falloff (Cosine Fourth Law)
+
+    // ── Skin Tone Protection ──
+    val skinToneProtection: Float   // 0.0 = off, 1.0 = fully protected against grading/density
 ) {
     /**
      * Custom equals/hashCode to handle FloatArray comparison.
@@ -110,13 +116,17 @@ data class FilmSimulationParams(
                 bloomTintG == other.bloomTintG &&
                 bloomTintB == other.bloomTintB &&
                 sharpenStrength == other.sharpenStrength &&
-                localToneMapStrength == other.localToneMapStrength
+                localToneMapStrength == other.localToneMapStrength &&
+                vignetteStrength == other.vignetteStrength &&
+                skinToneProtection == other.skinToneProtection
     }
 
     override fun hashCode(): Int {
         var result = shadowsR.hashCode()
         result = 31 * result + saturationMultipliers.contentHashCode()
         result = 31 * result + lutAssetPath.hashCode()
+        result = 31 * result + vignetteStrength.hashCode()
+        result = 31 * result + skinToneProtection.hashCode()
         return result
     }
 }

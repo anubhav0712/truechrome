@@ -22,4 +22,13 @@ object SensorCalibrationData {
         0.06f, 0.82f, 0.12f,
         0.04f, 0.06f, 0.90f
     )
+
+    // TrueChrome v2.0: Bradford Chromatic Adaptation (D65 to D50)
+    // Mathematically shifts the native D65 Daylight white point to a warm D50 Print Film white point.
+    // This provides a physically accurate cinematic warmth that simple matrix tweaks cannot achieve.
+    val BRADFORD_D65_TO_D50 = floatArrayOf(
+        1.0478112f, 0.0228866f, -0.0501270f,
+        0.0295424f, 0.9904844f, -0.0170491f,
+        -0.0092345f, 0.0150436f, 0.7521316f
+    )
 }

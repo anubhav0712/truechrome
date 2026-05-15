@@ -43,12 +43,20 @@ class GLCameraRenderer {
     private var pass3ColorGrade: ShaderProgram? = null
     private var pass4ColorChrome: ShaderProgram? = null
     private var pass5Grain: ShaderProgram? = null
+    private var pass6HalationBlur: ShaderProgram? = null
+    private var pass6HalationComposite: ShaderProgram? = null
 
     // ── Ping-pong FBOs ──
     private var fboA = 0
     private var fboTexA = 0
     private var fboB = 0
     private var fboTexB = 0
+
+    // ── Halation FBO (Downsampled) ──
+    private var fboHalation = 0
+    private var fboTexHalation = 0
+    private var halationWidth = 0
+    private var halationHeight = 0
 
     // ── Geometry ──
     private var vao = 0
@@ -105,6 +113,14 @@ class GLCameraRenderer {
             ShaderSources.VERTEX_SHADER,
             ShaderSources.PASS5_GRAIN_FRAGMENT
         )
+        pass6HalationBlur = ShaderProgram(
+            ShaderSources.VERTEX_SHADER,
+            ShaderSources.PASS6_HALATION_BLUR_FRAGMENT
+        )
+        pass6HalationComposite = ShaderProgram(
+            ShaderSources.VERTEX_SHADER,
+            ShaderSources.PASS6_HALATION_FRAGMENT
+        )
 
         // Create ping-pong FBOs
         createFbo(width, height).let { (fbo, tex) ->
@@ -112,6 +128,13 @@ class GLCameraRenderer {
         }
         createFbo(width, height).let { (fbo, tex) ->
             fboB = fbo; fboTexB = tex
+        }
+
+        // Create downsampled FBO for halation (1/4th resolution)
+        halationWidth = width / 4
+        halationHeight = height / 4
+        createFbo(halationWidth, halationHeight).let { (fbo, tex) ->
+            fboHalation = fbo; fboTexHalation = tex
         }
 
         // Create fullscreen quad VAO
@@ -151,7 +174,13 @@ class GLCameraRenderer {
         // ── PASS 4: Color Chrome (read FBO_A → write FBO_B) ──
         renderPass4(params)
 
-        // ── PASS 5: Film Grain (read FBO_B → write SCREEN) ──
+        // ── PASS 6.1: Halation Blur (read FBO_B → write fboHalation) ──
+        renderPassHalationBlur()
+
+        // ── PASS 6.2: Halation Composite (read FBO_B + fboHalation → write FBO_A) ──
+        renderPassHalationComposite(params)
+
+        // ── PASS 5: Film Grain (read FBO_A → write SCREEN) ──
         renderPass5(params)
     }
 
@@ -259,7 +288,51 @@ class GLCameraRenderer {
     }
 
     /**
-     * Pass 5: Film grain → Screen framebuffer. Read FBO_B → Write Screen
+     * Pass 6.1: Halation Blur. Read FBO_B → Write fboHalation
+     */
+    private fun renderPassHalationBlur() {
+        val program = pass6HalationBlur ?: return
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fboHalation)
+        GLES30.glViewport(0, 0, halationWidth, halationHeight)
+
+        program.use()
+
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexB) // Read from Pass 4 output
+        program.setInt("u_inputTexture", 0)
+
+        program.setVec2("u_texelSize", 1.0f / halationWidth, 1.0f / halationHeight)
+
+        drawQuad()
+    }
+
+    /**
+     * Pass 6.2: Halation Composite. Read FBO_B + fboHalation → Write FBO_A
+     */
+    private fun renderPassHalationComposite(params: FilmSimulationParams) {
+        val program = pass6HalationComposite ?: return
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fboA)
+        GLES30.glViewport(0, 0, viewportWidth, viewportHeight)
+
+        program.use()
+
+        // Original image from Pass 4
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexB)
+        program.setInt("u_inputTexture", 0)
+
+        // Blurred bloom map
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexHalation)
+        program.setInt("u_blurTexture", 1)
+
+        program.setFloat("u_halationIntensity", params.bloomIntensity)
+
+        drawQuad()
+    }
+
+    /**
+     * Pass 5: Film grain → Screen framebuffer. Read FBO_A → Write Screen
      */
     private fun renderPass5(params: FilmSimulationParams) {
         val program = pass5Grain ?: return
@@ -268,8 +341,9 @@ class GLCameraRenderer {
 
         program.use()
 
+        // We read from FBO_A now because Halation Composite wrote its output there.
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexB)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, fboTexA)
         program.setInt("u_inputTexture", 0)
 
         program.setVec2("u_resolution", viewportWidth.toFloat(), viewportHeight.toFloat())
@@ -387,11 +461,15 @@ class GLCameraRenderer {
         pass3ColorGrade?.release()
         pass4ColorChrome?.release()
         pass5Grain?.release()
+        pass6HalationBlur?.release()
+        pass6HalationComposite?.release()
 
         if (fboA != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(fboA), 0)
         if (fboB != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(fboB), 0)
+        if (fboHalation != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(fboHalation), 0)
         if (fboTexA != 0) GLES30.glDeleteTextures(1, intArrayOf(fboTexA), 0)
         if (fboTexB != 0) GLES30.glDeleteTextures(1, intArrayOf(fboTexB), 0)
+        if (fboTexHalation != 0) GLES30.glDeleteTextures(1, intArrayOf(fboTexHalation), 0)
         if (vbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(vbo), 0)
         if (vao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(vao), 0)
 

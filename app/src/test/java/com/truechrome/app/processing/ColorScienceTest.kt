@@ -51,6 +51,21 @@ class ColorScienceTest {
     }
 
     @Test
+    fun testBradfordMatrixIntegrity() {
+        val expectedBradfordMatrix = floatArrayOf(
+            1.0478112f, 0.0228866f, -0.0501270f,
+            0.0295424f, 0.9904844f, -0.0170491f,
+            -0.0092345f, 0.0150436f, 0.7521316f
+        )
+        assertArrayEquals(
+            "Bradford D65-to-D50 Adaptation Matrix has been altered!",
+            expectedBradfordMatrix,
+            SensorCalibrationData.BRADFORD_D65_TO_D50,
+            DELTA
+        )
+    }
+
+    @Test
     fun testAcesFilmicToneMappingExists() {
         // Ensures the ACES Filmic Curve (Krzysztof Narkowicz approximation) is present.
         // Removing this will cause the image to look flat and lack punchiness.
@@ -67,15 +82,34 @@ class ColorScienceTest {
 
     @Test
     fun testColorChromeEffectExists() {
-        // Ensures the Luma-preserving Color Chrome effect remains intact.
+        // Ensures the True Subtractive (CMY Density) Color Chrome effect remains intact.
         val chromeShader = ShaderSources.PASS4_COLOR_CHROME_FRAGMENT
         assertTrue(
-            "Color Chrome saturation masking is missing!",
-            chromeShader.contains("float mask = smoothstep(u_chromeThreshold, u_chromeThreshold + 0.15, saturation);")
+            "Subtractive CMY inversion is missing! Colors will act additively instead of like film dyes.",
+            chromeShader.contains("vec3 cmy = 1.0 - color;")
         )
         assertTrue(
-            "Color Chrome luminance preservation is missing! Colors will shift exposure.",
-            chromeShader.contains("float lumaRatio = (lumaDeepened > 0.001) ? lumaOriginal / lumaDeepened : 1.0;")
+            "Dye density exponentiation is missing! Film depth simulation will fail.",
+            chromeShader.contains("vec3 denseCMY = pow(cmy, vec3(1.0 + (u_chromeStrength * mask)));")
+        )
+    }
+
+    @Test
+    fun testHalationEffectExists() {
+        // Ensures the red-biased film halation shaders are present.
+        val blurShader = ShaderSources.PASS6_HALATION_BLUR_FRAGMENT
+        val compositeShader = ShaderSources.PASS6_HALATION_FRAGMENT
+        assertTrue(
+            "Halation highlight extraction is missing!",
+            blurShader.contains("vec3 extracted = max(centerColor - 0.8, 0.0) * 2.0;")
+        )
+        assertTrue(
+            "Halation red-biased scattering is missing!",
+            blurShader.contains("vec2 stepR = u_texelSize * 2.0;") && blurShader.contains("vec2 stepGB = u_texelSize * 1.0;")
+        )
+        assertTrue(
+            "Halation additive composite is missing!",
+            compositeShader.contains("vec3 finalColor = color + (halationBloom * u_halationIntensity);")
         )
     }
 

@@ -30,7 +30,7 @@ enum class FilmSimulation(
      * Grain is visible but not overpowering.
      */
     CLASSIC_NEGATIVE(
-        displayName = "Classic Neg",
+        displayName = "Everyday",
         subtitle = "Superia 400",
         accentColor = FilmClassicNeg,
         params = FilmSimulationParams(
@@ -69,7 +69,7 @@ enum class FilmSimulation(
      * soft highlight rolloff. Colors feel "weathered" and timeless.
      */
     CLASSIC_CHROME(
-        displayName = "Classic Chrome",
+        displayName = "Documentary",
         subtitle = "Documentary",
         accentColor = FilmClassicChrome,
         params = FilmSimulationParams(
@@ -107,7 +107,7 @@ enum class FilmSimulation(
      * Maximum color "punch" — makes nature scenes explode with color.
      */
     VELVIA(
-        displayName = "Velvia Vivid",
+        displayName = "Landscape",
         subtitle = "Landscape",
         accentColor = FilmVelvia,
         params = FilmSimulationParams(
@@ -145,7 +145,7 @@ enum class FilmSimulation(
      * slightly warm overall. Low contrast with open shadows.
      */
     ASTIA(
-        displayName = "Astia Soft",
+        displayName = "Portrait",
         subtitle = "Portrait",
         accentColor = FilmAstia,
         params = FilmSimulationParams(
@@ -183,7 +183,7 @@ enum class FilmSimulation(
      * Very muted colors, smooth skin, wide tonal range for post-processing headroom.
      */
     PRO_NEG_STD(
-        displayName = "Pro Neg Std",
+        displayName = "Studio",
         subtitle = "Studio",
         accentColor = FilmProNeg,
         params = FilmSimulationParams(
@@ -222,7 +222,7 @@ enum class FilmSimulation(
      * signature emphasis on green channel (for natural tonal separation in foliage/skin).
      */
     ACROS(
-        displayName = "Acros",
+        displayName = "B&W",
         subtitle = "Fine B&W",
         accentColor = FilmAcros,
         params = FilmSimulationParams(

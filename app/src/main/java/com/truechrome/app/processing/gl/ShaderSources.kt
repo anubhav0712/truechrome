@@ -21,6 +21,21 @@ package com.truechrome.app.processing.gl
 object ShaderSources {
 
     // ══════════════════════════════════════════════════════
+    // COMMON MATH FUNCTIONS
+    // ══════════════════════════════════════════════════════
+
+    const val GLSL_RGB2HSV = """
+        vec3 rgb2hsv(vec3 c) {
+            vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+            vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+            vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+            float d = q.x - min(q.w, q.y);
+            float e = 1.0e-10;
+            return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+        }
+    """
+
+    // ══════════════════════════════════════════════════════
     // SHARED VERTEX SHADER — used by all passes
     // ══════════════════════════════════════════════════════
 
@@ -189,10 +204,11 @@ object ShaderSources {
         // 12 saturation multipliers for 12 hue sectors (30° each)
         uniform float u_satMults[12];
         uniform float u_globalSaturation;
+        uniform int u_isMonochrome;
+        uniform vec3 u_monoWeights;
+        uniform float u_skinToneProtection;
         
-        // Monochrome conversion
-        uniform bool u_isMonochrome;
-        uniform vec3 u_monoWeights;   // (R, G, B) weights for luminosity B&W
+        $GLSL_RGB2HSV
         
         // RGB → HSL conversion (for hue-dependent saturation)
         vec3 rgb2hsl(vec3 c) {
@@ -236,25 +252,47 @@ object ShaderSources {
             
             // Apply 3D LUT
             vec3 lutColor = texture(u_lutTexture, color).rgb;
-            color = mix(color, lutColor, u_lutStrength);
+            vec3 gradedColor = mix(color, lutColor, u_lutStrength);
             
             // Hue-dependent saturation
-            vec3 hsl = rgb2hsl(color);
+            vec3 hsl = rgb2hsl(gradedColor);
             float hueMult = getHueSatMultiplier(hsl.x);
             
             // Apply saturation in a luminance-preserving way
-            float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            float luma = dot(gradedColor, vec3(0.2126, 0.7152, 0.0722));
             vec3 desaturated = vec3(luma);
             float effectiveSat = u_globalSaturation * hueMult;
-            color = mix(desaturated, color, effectiveSat);
+            gradedColor = mix(desaturated, gradedColor, effectiveSat);
             
             // Monochrome conversion
-            if (u_isMonochrome) {
-                float monoLuma = dot(color, u_monoWeights);
-                color = vec3(monoLuma);
+            if (u_isMonochrome == 1) {
+                float monoLuma = dot(gradedColor, u_monoWeights);
+                gradedColor = vec3(monoLuma);
             }
             
-            fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+            // ── Vectorscope Skin Tone Protection (I-Line Anchoring) ──
+            if (u_skinToneProtection > 0.001) {
+                vec3 hsv = rgb2hsv(color); // Analyze original, pre-LUT color
+                
+                // Human blood dictates skin falls precisely on the I-Line (approx 15-18 deg, or 0.05 normalized hue)
+                float SKIN_HUE = 0.05;
+                float hueDist = min(abs(hsv.x - SKIN_HUE), 1.0 - abs(hsv.x - SKIN_HUE));
+                
+                // Gaussian falloff for hue (sigma = 0.03 ~10 degrees)
+                float skinWeight = exp(-(hueDist * hueDist) / 0.0018);
+                
+                // Ensure the pixel has enough saturation and luminance to actually be skin
+                float satWeight = smoothstep(0.1, 0.7, hsv.y);
+                float valWeight = smoothstep(0.1, 0.9, hsv.z);
+                
+                // Final protection mask
+                float W = skinWeight * satWeight * valWeight * u_skinToneProtection;
+                
+                // Interpolate between the heavily graded color and the original color
+                gradedColor = mix(gradedColor, color, W);
+            }
+            
+            fragColor = vec4(clamp(gradedColor, 0.0, 1.0), 1.0);
         }
     """.trimIndent()
 
@@ -262,14 +300,6 @@ object ShaderSources {
     // PASS 4: Color Chrome Effect
     // ══════════════════════════════════════════════════════
 
-    /**
-     * Fujifilm's Color Chrome Effect: deepens already-saturated colors
-     * without clipping or shifting hue. It detects regions where a single
-     * color channel dominates and pushes it further while compensating luminance.
-     *
-     * smoothstep ensures no hard threshold boundaries — the effect is a
-     * continuous function with no binary decisions.
-     */
     val PASS4_COLOR_CHROME_FRAGMENT = """
         #version 300 es
         precision highp float;
@@ -280,6 +310,9 @@ object ShaderSources {
         uniform sampler2D u_inputTexture;
         uniform float u_chromeStrength;
         uniform float u_chromeThreshold;
+        uniform float u_skinToneProtection;
+        
+        $GLSL_RGB2HSV
         
         void main() {
             vec3 color = texture(u_inputTexture, v_texCoord).rgb;
@@ -289,29 +322,47 @@ object ShaderSources {
                 return;
             }
             
-            // Measure saturation: ratio of (max - min) to max channel
-            float maxChannel = max(max(color.r, color.g), color.b);
-            float minChannel = min(min(color.r, color.g), color.b);
-            float chroma = maxChannel - minChannel;
-            float saturation = (maxChannel > 0.001) ? chroma / maxChannel : 0.0;
+            // True Subtractive Color Mixing (CMY Density Model)
+            // Film dyes don't emit light (RGB), they subtract light (CMY).
             
-            // Color Chrome mask: activate for already-saturated regions
-            // smoothstep ensures continuous, deterministic transitions
+            // Clamp color to prevent NaN in pow() if HDR values exceed 1.0 (blown highlights)
+            vec3 clampedColor = clamp(color, 0.0, 1.0);
+            
+            float localChromeStrength = u_chromeStrength;
+            
+            // ── Vectorscope Skin Tone Protection ──
+            if (u_skinToneProtection > 0.001) {
+                vec3 hsv = rgb2hsv(clampedColor);
+                float hueDist = min(abs(hsv.x - 0.05), 1.0 - abs(hsv.x - 0.05));
+                float skinWeight = exp(-(hueDist * hueDist) / 0.0018);
+                float satWeight = smoothstep(0.1, 0.7, hsv.y);
+                float valWeight = smoothstep(0.1, 0.9, hsv.z);
+                float W = skinWeight * satWeight * valWeight * u_skinToneProtection;
+                
+                // Subtractive mixing heavily damages skin tones by removing light.
+                // We reduce the effect strength specifically for skin vectors.
+                localChromeStrength *= (1.0 - W);
+            }
+            
+            // 1. Convert to CMY
+            vec3 cmy = 1.0 - clampedColor;
+            
+            // 2. Measure saturation to create a mask (we only want to deepen already saturated colors)
+            float maxChannel = max(max(clampedColor.r, clampedColor.g), clampedColor.b);
+            float minChannel = min(min(clampedColor.r, clampedColor.g), clampedColor.b);
+            float saturation = (maxChannel > 0.001) ? (maxChannel - minChannel) / maxChannel : 0.0;
             float mask = smoothstep(u_chromeThreshold, u_chromeThreshold + 0.15, saturation);
             
-            // Deepen: push the dominant channel further from the others
-            vec3 deepened = color;
-            float lumaOriginal = dot(color, vec3(0.2126, 0.7152, 0.0722));
+            // 3. Apply chemical dye density via exponential curve
+            // Increased strength means thicker dyes, absorbing exponentially more light
+            vec3 denseCMY = pow(cmy, vec3(1.0 + (localChromeStrength * mask)));
             
-            // Increase chroma by scaling each channel's deviation from luminance
-            vec3 deviation = color - vec3(lumaOriginal);
-            deepened = color + deviation * mask * u_chromeStrength;
+            // 4. Convert back to RGB
+            vec3 deepened = 1.0 - denseCMY;
             
-            // Luminance compensation: restore original brightness
-            // This prevents the deepening from changing overall exposure
-            float lumaDeepened = dot(deepened, vec3(0.2126, 0.7152, 0.0722));
-            float lumaRatio = (lumaDeepened > 0.001) ? lumaOriginal / lumaDeepened : 1.0;
-            deepened *= lumaRatio;
+            // Note: We intentionally DO NOT restore luminance here. 
+            // In physical film, highly saturated colors are naturally darker because 
+            // the thick dyes filter out more light. This creates the rich, deep look.
             
             fragColor = vec4(clamp(deepened, 0.0, 1.0), 1.0);
         }
@@ -349,6 +400,7 @@ object ShaderSources {
         uniform float u_grainSize;
         uniform float u_grainLumaResponse;
         uniform float u_grainSeed;    // Deterministic: captureTimestamp for final, frameIndex for preview
+        uniform float u_vignetteStrength;
         
         // Deterministic hash function — NOT random
         // Same input always produces same output (IEEE 754 highp guarantee)
@@ -360,6 +412,24 @@ object ShaderSources {
         
         void main() {
             vec3 color = texture(u_inputTexture, v_texCoord).rgb;
+            
+            // ── Optical Illuminance Falloff (Cosine Fourth Law Vignette) ──
+            if (u_vignetteStrength > 0.001) {
+                // Shift UV to -0.5 to 0.5
+                vec2 uv = v_texCoord - 0.5;
+                // Correct for aspect ratio so vignette is circular, not elliptical
+                uv.x *= u_resolution.x / u_resolution.y;
+                
+                float distSq = dot(uv, uv);
+                
+                // Calculate physically accurate light falloff
+                // E = E_0 * cos^4(theta)
+                // Approximated by E = E_0 / (1 + r^2)^2
+                float falloff = 1.0 + distSq * (4.0 * u_vignetteStrength);
+                float vignette = 1.0 / (falloff * falloff);
+                
+                color *= vignette;
+            }
             
             if (u_grainIntensity < 0.001) {
                 fragColor = vec4(color, 1.0);
@@ -380,6 +450,98 @@ object ShaderSources {
             
             color += noise * u_grainIntensity * lumaMask;
             fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+        }
+    """.trimIndent()
+
+    // ══════════════════════════════════════════════════════
+    // PASS 6: Halation (Red-Scattering Highlight Blur)
+    // ══════════════════════════════════════════════════════
+
+    /**
+     * Film Halation Effect: Simulates red light scattering off the film base.
+     * Extracts bright areas, applies a red-biased multi-tap blur, and additively
+     * composites it over the original image.
+     */
+    val PASS6_HALATION_FRAGMENT = """
+        #version 300 es
+        precision highp float;
+        
+        in vec2 v_texCoord;
+        out vec4 fragColor;
+        
+        uniform sampler2D u_inputTexture; // Original full-res frame
+        uniform sampler2D u_blurTexture;  // Downsampled blurred highlights
+        uniform float u_halationIntensity;
+        
+        void main() {
+            vec3 color = texture(u_inputTexture, v_texCoord).rgb;
+            
+            if (u_halationIntensity < 0.001) {
+                fragColor = vec4(color, 1.0);
+                return;
+            }
+            
+            // Read the pre-blurred highlights
+            vec3 halationBloom = texture(u_blurTexture, v_texCoord).rgb;
+            
+            // Additive composite (linear light addition)
+            vec3 finalColor = color + (halationBloom * u_halationIntensity);
+            
+            fragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+        }
+    """.trimIndent()
+
+    val PASS6_HALATION_BLUR_FRAGMENT = """
+        #version 300 es
+        precision highp float;
+        
+        in vec2 v_texCoord;
+        out vec4 fragColor;
+        
+        uniform sampler2D u_inputTexture;
+        uniform vec2 u_texelSize; // 1.0 / resolution
+        
+        // 9-tap Gaussian blur weights
+        const float weight[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+        
+        void main() {
+            vec3 centerColor = texture(u_inputTexture, v_texCoord).rgb;
+            
+            // 1. Highlight Extraction (Thresholding)
+            // We only want to blur pixels that are very bright (e.g. > 0.8)
+            vec3 extracted = max(centerColor - 0.8, 0.0) * 2.0;
+            
+            vec3 result = extracted * weight[0];
+            
+            // 2. 9-tap Cross Blur (Horizontal + Vertical combined for performance on small FBO)
+            // Red channel gets a wider scatter (larger step size) to simulate emulsion depth
+            vec2 stepR = u_texelSize * 2.0;
+            vec2 stepGB = u_texelSize * 1.0;
+            
+            for(int i = 1; i < 5; ++i) {
+                float w = weight[i];
+                float offset = float(i);
+                
+                // Red gets wider spread
+                vec3 sampleR1 = texture(u_inputTexture, v_texCoord + vec2(stepR.x * offset, 0.0)).rgb;
+                vec3 sampleR2 = texture(u_inputTexture, v_texCoord - vec2(stepR.x * offset, 0.0)).rgb;
+                vec3 sampleR3 = texture(u_inputTexture, v_texCoord + vec2(0.0, stepR.y * offset)).rgb;
+                vec3 sampleR4 = texture(u_inputTexture, v_texCoord - vec2(0.0, stepR.y * offset)).rgb;
+                
+                result.r += (max(sampleR1.r - 0.8, 0.0) + max(sampleR2.r - 0.8, 0.0) + 
+                             max(sampleR3.r - 0.8, 0.0) + max(sampleR4.r - 0.8, 0.0)) * 2.0 * w;
+                
+                // Green/Blue get tighter spread
+                vec3 sampleGB1 = texture(u_inputTexture, v_texCoord + vec2(stepGB.x * offset, 0.0)).rgb;
+                vec3 sampleGB2 = texture(u_inputTexture, v_texCoord - vec2(stepGB.x * offset, 0.0)).rgb;
+                vec3 sampleGB3 = texture(u_inputTexture, v_texCoord + vec2(0.0, stepGB.y * offset)).rgb;
+                vec3 sampleGB4 = texture(u_inputTexture, v_texCoord - vec2(0.0, stepGB.y * offset)).rgb;
+                
+                result.gb += (max(sampleGB1.gb - 0.8, 0.0) + max(sampleGB2.gb - 0.8, 0.0) + 
+                              max(sampleGB3.gb - 0.8, 0.0) + max(sampleGB4.gb - 0.8, 0.0)) * 2.0 * w;
+            }
+            
+            fragColor = vec4(result, 1.0);
         }
     """.trimIndent()
 

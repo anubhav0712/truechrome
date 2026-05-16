@@ -58,7 +58,9 @@ enum class FilmSimulation(
             bloomThreshold = 0.82f,
             bloomTintR = 1.0f, bloomTintG = 0.85f, bloomTintB = 0.7f,  // Warm halation
             sharpenStrength = 0.4f,
-            localToneMapStrength = 0.3f
+            localToneMapStrength = 0.3f,
+            vignetteStrength = 0.3f,
+            skinToneProtection = 0.8f
         )
     ),
 
@@ -96,7 +98,9 @@ enum class FilmSimulation(
             bloomThreshold = 0.88f,
             bloomTintR = 0.95f, bloomTintG = 0.93f, bloomTintB = 0.9f,  // Neutral/cool
             sharpenStrength = 0.5f,
-            localToneMapStrength = 0.25f
+            localToneMapStrength = 0.25f,
+            vignetteStrength = 0.5f,
+            skinToneProtection = 0.9f
         )
     ),
 
@@ -134,7 +138,9 @@ enum class FilmSimulation(
             bloomThreshold = 0.85f,
             bloomTintR = 1.0f, bloomTintG = 0.95f, bloomTintB = 0.88f,
             sharpenStrength = 0.7f,  // Strong — landscape detail
-            localToneMapStrength = 0.45f  // More aggressive HDR compression for landscapes
+            localToneMapStrength = 0.45f, // More aggressive HDR compression for landscapes
+            vignetteStrength = 0.2f,
+            skinToneProtection = 0.5f
         )
     ),
 
@@ -172,7 +178,9 @@ enum class FilmSimulation(
             bloomThreshold = 0.80f,
             bloomTintR = 1.0f, bloomTintG = 0.92f, bloomTintB = 0.88f,  // Warm soft glow
             sharpenStrength = 0.2f,  // Light — preserve skin softness
-            localToneMapStrength = 0.15f  // Minimal — preserve natural contrast
+            localToneMapStrength = 0.15f, // Minimal — preserve natural contrast
+            vignetteStrength = 0.1f,
+            skinToneProtection = 1.0f
         )
     ),
 
@@ -210,7 +218,9 @@ enum class FilmSimulation(
             bloomThreshold = 0.9f,
             bloomTintR = 1.0f, bloomTintG = 0.98f, bloomTintB = 0.96f,
             sharpenStrength = 0f,  // None — maximum softness for studio
-            localToneMapStrength = 0.1f  // Minimal — preserve flat latitude
+            localToneMapStrength = 0.1f, // Minimal — preserve flat latitude
+            vignetteStrength = 0.0f,
+            skinToneProtection = 0.9f
         )
     ),
 
@@ -252,7 +262,9 @@ enum class FilmSimulation(
             bloomThreshold = 0.83f,
             bloomTintR = 1.0f, bloomTintG = 1.0f, bloomTintB = 1.0f,  // Pure white bloom
             sharpenStrength = 0.45f,  // Medium — reveal fine grain structure
-            localToneMapStrength = 0.2f
+            localToneMapStrength = 0.2f,
+            vignetteStrength = 0.6f,
+            skinToneProtection = 0.0f
         )
     );
 

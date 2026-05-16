@@ -61,6 +61,18 @@ class CameraViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
 
+    // Expose reusable TrackingData directly (no allocations)
+    val trackingData: com.truechrome.app.camera.domain.model.TrackingData
+        get() = cameraRepository.trackingData
+
+    init {
+        viewModelScope.launch {
+            cameraRepository.trackingTickFlow.collect { tick ->
+                _uiState.update { it.copy(trackingUpdateTick = tick) }
+            }
+        }
+    }
+
     // Track the camera open job to prevent double-opening
     private var cameraJob: Job? = null
 

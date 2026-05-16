@@ -194,10 +194,10 @@ class GLCameraRenderer {
 
         program.use()
 
-        // Bind camera texture to unit 0
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        // Bind camera texture to unit 3 to avoid target conflicts with GL_TEXTURE_2D on unit 0
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
         GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
-        program.setInt("u_cameraTexture", 0)
+        program.setInt("u_cameraTexture", 3)
 
         // Set texture transform matrix
         val matLocation = GLES30.glGetUniformLocation(program.programId, "u_texMatrix")

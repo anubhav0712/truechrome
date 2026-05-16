@@ -351,6 +351,45 @@ private fun ViewfinderContent(
             }
         }
 
+        // ── Tracking Reticle [ · ] ──
+        val trackingUpdateTick = uiState.trackingUpdateTick // Read to trigger recomposition
+        val trackingData = viewModel.trackingData
+        
+        val targetAlpha = if (trackingData.isActive) 0.8f else 0f
+        val reticleAlpha by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = targetAlpha,
+            animationSpec = androidx.compose.animation.core.tween(durationMillis = 300),
+            label = "ReticleAlpha"
+        )
+        
+        if (reticleAlpha > 0f) {
+            val normX = trackingData.normalizedCenter.x
+            val normY = trackingData.normalizedCenter.y
+            
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                val cx = normX * size.width
+                val cy = normY * size.height
+                
+                val bracketSize = 24.dp.toPx()
+                val cornerLength = 6.dp.toPx()
+                val strokeWidth = 1.5.dp.toPx()
+                val color = Color.White.copy(alpha = reticleAlpha)
+                
+                // Left Bracket [
+                drawLine(color, androidx.compose.ui.geometry.Offset(cx - bracketSize/2, cy - bracketSize/2), androidx.compose.ui.geometry.Offset(cx - bracketSize/2 + cornerLength, cy - bracketSize/2), strokeWidth)
+                drawLine(color, androidx.compose.ui.geometry.Offset(cx - bracketSize/2, cy - bracketSize/2), androidx.compose.ui.geometry.Offset(cx - bracketSize/2, cy + bracketSize/2), strokeWidth)
+                drawLine(color, androidx.compose.ui.geometry.Offset(cx - bracketSize/2, cy + bracketSize/2), androidx.compose.ui.geometry.Offset(cx - bracketSize/2 + cornerLength, cy + bracketSize/2), strokeWidth)
+                
+                // Right Bracket ]
+                drawLine(color, androidx.compose.ui.geometry.Offset(cx + bracketSize/2, cy - bracketSize/2), androidx.compose.ui.geometry.Offset(cx + bracketSize/2 - cornerLength, cy - bracketSize/2), strokeWidth)
+                drawLine(color, androidx.compose.ui.geometry.Offset(cx + bracketSize/2, cy - bracketSize/2), androidx.compose.ui.geometry.Offset(cx + bracketSize/2, cy + bracketSize/2), strokeWidth)
+                drawLine(color, androidx.compose.ui.geometry.Offset(cx + bracketSize/2, cy + bracketSize/2), androidx.compose.ui.geometry.Offset(cx + bracketSize/2 - cornerLength, cy + bracketSize/2), strokeWidth)
+                
+                // Center Dot ·
+                drawCircle(color, radius = 2.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy))
+            }
+        }
+
         // Shutter Flash Animation
         var showFlash by remember { mutableStateOf(false) }
         LaunchedEffect(uiState.isCapturing) {

@@ -57,6 +57,12 @@ interface CameraRepository {
      * Returns when focus is locked or fails.
      */
     suspend fun triggerAutofocus(x: Float, y: Float)
+
+    /** Tick flow that emits whenever TrackingData is updated */
+    val trackingTickFlow: StateFlow<Int>
+
+    /** Reusable tracking data object */
+    val trackingData: com.truechrome.app.camera.domain.model.TrackingData
 }
 
 /**

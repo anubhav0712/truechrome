@@ -44,5 +44,8 @@ data class CameraUiState(
     val isExposureLocked: Boolean = false,
 
     /** URI of the most recently captured photo */
-    val latestPhotoUri: android.net.Uri? = null
+    val latestPhotoUri: android.net.Uri? = null,
+
+    /** Increments to trigger recomposition when tracking coordinates update */
+    val trackingUpdateTick: Int = 0
 )

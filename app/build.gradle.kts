@@ -131,4 +131,9 @@ dependencies {
 
     // ── Image Loading (Coil) ──
     implementation("io.coil-kt:coil-compose:2.6.0")
+
+    // ── Machine Learning (AF Tracking) ──
+    // Used for high-speed, hardware-accelerated face/eye tracking
+    // offloaded to the Dimensity 7350 Pro APU.
+    implementation("com.google.mlkit:face-detection:16.1.6")
 }

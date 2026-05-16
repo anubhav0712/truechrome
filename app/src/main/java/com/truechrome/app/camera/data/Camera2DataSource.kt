@@ -6,6 +6,7 @@ import android.graphics.ImageFormat
 import android.hardware.camera2.*
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.MeteringRectangle
 import android.os.Build
 import android.os.Handler
 import android.util.Log
@@ -67,6 +68,14 @@ class Camera2DataSource @Inject constructor(
     private var captureSession: CameraCaptureSession? = null
     private var previewRequestBuilder: CaptureRequest.Builder? = null
     private var zslImageReader: android.media.ImageReader? = null
+    private var trackingImageReader: android.media.ImageReader? = null
+    
+    private var trackingEngine: TrackingEngine? = null
+    
+    private val _trackingTickFlow = kotlinx.coroutines.flow.MutableStateFlow(0)
+    val trackingTickFlow: kotlinx.coroutines.flow.StateFlow<Int> = _trackingTickFlow
+    val trackingData: com.truechrome.app.camera.domain.model.TrackingData
+        get() = trackingEngine?.trackingData ?: com.truechrome.app.camera.domain.model.TrackingData()
 
     /**
      * Queries the rear camera's capabilities and returns a CameraConfig.
@@ -272,6 +281,11 @@ class Camera2DataSource @Inject constructor(
         }
         zslImageReader = reader
 
+        // Recreate Tracking Engine for this session
+        trackingEngine?.release()
+        val engine = TrackingEngine()
+        trackingEngine = engine
+
         reader.setOnImageAvailableListener({ ir ->
             try {
                 val image = ir.acquireNextImage()
@@ -285,10 +299,30 @@ class Camera2DataSource @Inject constructor(
             }
         }, cameraHandler)
 
+        // Create 480p ImageReader for high-speed ML tracking
+        val trackingReader = android.media.ImageReader.newInstance(
+            640, 480, ImageFormat.YUV_420_888, 3
+        )
+        trackingImageReader = trackingReader
+        trackingReader.setOnImageAvailableListener({ ir ->
+            try {
+                val image = ir.acquireLatestImage()
+                if (image != null) {
+                    engine.processImage(image, config.sensorOrientation) { data ->
+                        // Plumb tracking bounds back to update AF regions natively via PDAF
+                        updateTrackingFocusRegion(data.normalizedCenter.x, data.normalizedCenter.y)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error acquiring Tracking image", e)
+            }
+        }, cameraHandler)
+
         // Build the preview request
         val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(previewSurface)
             addTarget(reader.surface)
+            addTarget(trackingReader.surface)
 
             // ── DETERMINISTIC CAPTURE SETTINGS ──
 
@@ -297,10 +331,10 @@ class Camera2DataSource @Inject constructor(
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
 
-            // Continuous autofocus for viewfinder
+            // Continuous autofocus for viewfinder (VIDEO is snappier for moving subjects)
             set(
                 CaptureRequest.CONTROL_AF_MODE,
-                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
             )
 
             // STRIP OEM post-processing for raw, unprocessed frames:
@@ -350,10 +384,11 @@ class Camera2DataSource @Inject constructor(
                 // Use SessionConfiguration for API 28+
                 val previewOutput = OutputConfiguration(previewSurface)
                 val zslOutput = OutputConfiguration(reader.surface)
+                val trackingOutput = OutputConfiguration(trackingReader.surface)
                 
                 val sessionConfig = SessionConfiguration(
                     SessionConfiguration.SESSION_REGULAR,
-                    listOf(previewOutput, zslOutput),
+                    listOf(previewOutput, zslOutput, trackingOutput),
                     { it.run() },  // Direct executor (runs on camera handler thread)
                     stateCallback
                 )
@@ -378,7 +413,7 @@ class Camera2DataSource @Inject constructor(
         try {
             session.setRepeatingRequest(
                 builder.build(),
-                createAeLockingCallback(),
+                null,
                 cameraHandler
             )
             Log.d(TAG, "Preview repeating request started")
@@ -387,75 +422,7 @@ class Camera2DataSource @Inject constructor(
         }
     }
 
-    /**
-     * Creates a CaptureCallback that locks AE/AWB after convergence.
-     *
-     * FLOW:
-     * 1. Monitor CONTROL_AE_STATE for CONVERGED
-     * 2. When AE converges, set CONTROL_AE_LOCK = true
-     * 3. Monitor CONTROL_AWB_STATE for CONVERGED
-     * 4. When AWB converges, set CONTROL_AWB_LOCK = true
-     * 5. All subsequent frames now have locked, deterministic exposure/WB
-     */
-    private fun createAeLockingCallback(): CameraCaptureSession.CaptureCallback {
-        var aeLocked = false
-        var awbLocked = false
 
-        return object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                session: CameraCaptureSession,
-                request: CaptureRequest,
-                result: TotalCaptureResult
-            ) {
-                // Lock AE after convergence
-                if (!aeLocked) {
-                    val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
-                    if (aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED) {
-                        Log.d(TAG, "AE converged — locking")
-                        previewRequestBuilder?.let { builder ->
-                            builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
-                            try {
-                                session.setRepeatingRequest(
-                                    builder.build(), this, cameraHandler
-                                )
-                                aeLocked = true
-                            } catch (e: CameraAccessException) {
-                                Log.e(TAG, "Failed to lock AE", e)
-                            }
-                        }
-                    }
-                }
-
-                // Lock AWB after convergence
-                if (!awbLocked) {
-                    val awbState = result.get(CaptureResult.CONTROL_AWB_STATE)
-                    if (awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED) {
-                        Log.d(TAG, "AWB converged — locking")
-                        previewRequestBuilder?.let { builder ->
-                            builder.set(CaptureRequest.CONTROL_AWB_LOCK, true)
-                            try {
-                                session.setRepeatingRequest(
-                                    builder.build(), this, cameraHandler
-                                )
-                                awbLocked = true
-                            } catch (e: CameraAccessException) {
-                                Log.e(TAG, "Failed to lock AWB", e)
-                            }
-                        }
-                    }
-                }
-            }
-
-            override fun onCaptureFailed(
-                session: CameraCaptureSession,
-                request: CaptureRequest,
-                failure: CaptureFailure
-            ) {
-                Log.w(TAG, "Preview capture failed: reason=${failure.reason}")
-                // Don't crash — preview failures are transient and self-recovering
-            }
-        }
-    }
 
     /**
      * Stops the preview and closes the session.
@@ -491,7 +458,102 @@ class Camera2DataSource @Inject constructor(
         cameraDevice = null
         zslImageReader?.close()
         zslImageReader = null
+        trackingImageReader?.close()
+        trackingImageReader = null
+        
+        // Reset tracking state so reticle hides
+        trackingEngine?.trackingData?.isActive = false
+        _trackingTickFlow.value += 1
+        
+        trackingEngine?.release()
+        trackingEngine = null
         zslRingBuffer.clear()
+    }
+
+    /**
+     * Maps normalized UI touch coordinates to the physical sensor array size,
+     * accounting for sensor orientation.
+     */
+    private fun getMeteringRect(normalizedX: Float, normalizedY: Float): MeteringRectangle {
+        val chars = cameraManager.getCameraCharacteristics(cameraDevice!!.id)
+        val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) 
+            ?: android.graphics.Rect(0, 0, 4000, 3000)
+        val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+
+        var sensorX = 0
+        var sensorY = 0
+        if (sensorOrientation == 90 || sensorOrientation == 270) {
+            // Standard Android portrait mapping (90 degree rotation)
+            sensorX = (normalizedY * activeArray.width()).toInt()
+            sensorY = ((1.0f - normalizedX) * activeArray.height()).toInt()
+        } else {
+            sensorX = (normalizedX * activeArray.width()).toInt()
+            sensorY = (normalizedY * activeArray.height()).toInt()
+        }
+
+        // Adaptive box size (4% of active array)
+        val boxWidth = (activeArray.width() * 0.04f).toInt()
+        val boxHeight = (activeArray.height() * 0.04f).toInt()
+
+        val left = (sensorX - boxWidth / 2).coerceIn(0, activeArray.width() - boxWidth)
+        val top = (sensorY - boxHeight / 2).coerceIn(0, activeArray.height() - boxHeight)
+
+        val rect = android.graphics.Rect(left, top, left + boxWidth, top + boxHeight)
+        return MeteringRectangle(rect, MeteringRectangle.METERING_WEIGHT_MAX)
+    }
+
+    /**
+     * Resets focus mode back to CONTINUOUS_PICTURE and removes metering regions.
+     */
+    private fun resetToContinuousAF() {
+        val builder = previewRequestBuilder ?: return
+        val session = captureSession ?: return
+        
+        // Cancel ongoing AF lock
+        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+        try {
+            session.capture(builder.build(), null, cameraHandler)
+        } catch (e: CameraAccessException) { }
+        
+        // Remove metering regions and switch to continuous video for moving subjects
+        builder.set(CaptureRequest.CONTROL_AF_REGIONS, null)
+        builder.set(CaptureRequest.CONTROL_AE_REGIONS, null)
+        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+        builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
+        builder.set(CaptureRequest.CONTROL_AWB_LOCK, false)
+        
+        try {
+            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+        } catch (e: CameraAccessException) { }
+    }
+
+    /**
+     * Updates the repeating request with the active ML tracking box.
+     * Unlike tap-to-focus, this does NOT trigger a manual AF scan. It simply shifts
+     * the PDAF regions so the hardware seamlessly converges.
+     */
+    private fun updateTrackingFocusRegion(normX: Float, normY: Float) {
+        val builder = previewRequestBuilder ?: return
+        val session = captureSession ?: return
+        
+        val meteringRect = getMeteringRect(normX, normY)
+        val meteringArray = arrayOf(meteringRect)
+        
+        builder.set(CaptureRequest.CONTROL_AF_REGIONS, meteringArray)
+        builder.set(CaptureRequest.CONTROL_AE_REGIONS, meteringArray)
+        // Keep it in continuous mode to let phase-detection hardware do the work smoothly
+        // CONTINUOUS_VIDEO is much snappier for moving subjects
+        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+        builder.set(CaptureRequest.CONTROL_AE_LOCK, false) // Ensure AE is unlocked so it tracks shadows
+
+        
+        try {
+            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+            _trackingTickFlow.value += 1
+        } catch (e: CameraAccessException) {
+            // Ignore during rapid tracking
+        }
     }
 
     /**
@@ -502,6 +564,10 @@ class Camera2DataSource @Inject constructor(
         val builder = previewRequestBuilder ?: return
         val session = captureSession ?: return
 
+        // Calculate Metering Rectangle
+        val meteringRect = getMeteringRect(x, y)
+        val meteringArray = arrayOf(meteringRect)
+
         // Cancel any ongoing AF
         builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
         try {
@@ -511,10 +577,22 @@ class Camera2DataSource @Inject constructor(
             return
         }
 
-        // Trigger new AF
-        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+        // Apply Tap-to-Focus settings
+        builder.set(CaptureRequest.CONTROL_AF_REGIONS, meteringArray)
+        builder.set(CaptureRequest.CONTROL_AE_REGIONS, meteringArray)
+        builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+        builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
+        
+        // Update repeating request to ensure AE stays unlocked during the scan
+        try {
+            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+        } catch (e: CameraAccessException) { }
 
-        suspendCancellableCoroutine { continuation ->
+        // Set triggers for the one-off capture
+        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+        builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_START)
+
+        suspendCancellableCoroutine<Unit> { continuation ->
             val callback = object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession,
@@ -525,14 +603,21 @@ class Camera2DataSource @Inject constructor(
                     if (afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
                         afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED
                     ) {
-                        // Reset trigger
-                        builder.set(
-                            CaptureRequest.CONTROL_AF_TRIGGER,
-                            CaptureRequest.CONTROL_AF_TRIGGER_IDLE
-                        )
+                        // Reset triggers but keep regions
+                        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+                        builder.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER_IDLE)
+                        try {
+                            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                        } catch (e: CameraAccessException) { }
+
                         if (continuation.isActive) {
                             continuation.resume(Unit)
                         }
+
+                        // Timeout & Reset loop (4 seconds)
+                        cameraHandler.postDelayed({
+                            resetToContinuousAF()
+                        }, 4000)
                     }
                 }
 

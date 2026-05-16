@@ -174,6 +174,8 @@ class GLTextureView(
 
                 // Update the camera texture with latest frame
                 try {
+                    // MUST activate texture unit 3 before updateTexImage to prevent conflict with GL_TEXTURE_2D on unit 0
+                    GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
                     cameraSurfaceTexture?.updateTexImage()
                     cameraSurfaceTexture?.getTransformMatrix(texMatrix)
                 } catch (e: Exception) {

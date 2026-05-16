@@ -37,6 +37,11 @@ class CameraRepositoryImpl @Inject constructor(
     private val _isOpen = MutableStateFlow(false)
     override val isOpen: StateFlow<Boolean> = _isOpen.asStateFlow()
 
+    override val trackingTickFlow: StateFlow<Int> = dataSource.trackingTickFlow
+    
+    override val trackingData: com.truechrome.app.camera.domain.model.TrackingData
+        get() = dataSource.trackingData
+
     override suspend fun openCamera(): CameraConfig {
         try {
             // Step 1: Query capabilities (no device open needed)
